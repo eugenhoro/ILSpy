@@ -615,6 +615,7 @@
     <Content Include="..\doc\Pattern Matching.html">
       <Link>CSharp\Syntax\PatternMatching\Pattern Matching.html</Link>
     </Content>
+    <Content Include="WS.txt" />
   </ItemGroup>
 
   <ItemGroup>
