@@ -286,6 +286,26 @@ namespace ICSharpCode.ILSpy.Properties {
         }
         
         /// <summary>
+        ///   Looks up a localized string similar to Add shell integration.
+        /// </summary>
+        public static string AddShellIntegration {
+            get {
+                return ResourceManager.GetString("AddShellIntegration", resourceCulture);
+            }
+        }
+        
+        /// <summary>
+        ///   Looks up a localized string similar to This will add &quot;{0}&quot; to the registry at &quot;HKCU\Software\Classes\dllfile\shell\Open with ILSpy\command&quot; and &quot;HKCU\Software\Classes\exefile\shell\Open with ILSpy\command&quot; to allow opening .dll and .exe files from the Windows Explorer context menu.
+        ///
+        ///Do you want to continue?.
+        /// </summary>
+        public static string AddShellIntegrationMessage {
+            get {
+                return ResourceManager.GetString("AddShellIntegrationMessage", resourceCulture);
+            }
+        }
+        
+        /// <summary>
         ///   Looks up a localized string similar to |All Files|*.*.
         /// </summary>
         public static string AllFiles {
@@ -836,6 +856,15 @@ namespace ICSharpCode.ILSpy.Properties {
         }
         
         /// <summary>
+        ///   Looks up a localized string similar to Introduce static local functions.
+        /// </summary>
+        public static string DecompilerSettings_IntroduceStaticLocalFunctions {
+            get {
+                return ResourceManager.GetString("DecompilerSettings.IntroduceStaticLocalFunctions", resourceCulture);
+            }
+        }
+        
+        /// <summary>
         ///   Looks up a localized string similar to IsByRefLikeAttribute should be replaced with &apos;ref&apos; modifiers on structs.
         /// </summary>
         public static string DecompilerSettings_IsByRefLikeAttributeShouldBeReplacedWithRefModifiersOnStructs {
@@ -1297,6 +1326,15 @@ namespace ICSharpCode.ILSpy.Properties {
         }
         
         /// <summary>
+        ///   Looks up a localized string similar to Hide empty metadata tables from tree view.
+        /// </summary>
+        public static string HideEmptyMetadataTables {
+            get {
+                return ResourceManager.GetString("HideEmptyMetadataTables", resourceCulture);
+            }
+        }
+        
+        /// <summary>
         ///   Looks up a localized string similar to Highlight matching braces.
         /// </summary>
         public static string HighlightMatchingBraces {
@@ -1455,6 +1493,16 @@ namespace ICSharpCode.ILSpy.Properties {
         public static string Navigation {
             get {
                 return ResourceManager.GetString("Navigation", resourceCulture);
+            }
+        }
+        
+        /// <summary>
+        ///   Looks up a localized string similar to Navigation failed because the target is hidden or a compiler-generated class.\n
+        ///Please disable all filters that might hide the item (i.e. activate &quot;View &gt; Show internal types and members&quot;) and try again..
+        /// </summary>
+        public static string NavigationFailed {
+            get {
+                return ResourceManager.GetString("NavigationFailed", resourceCulture);
             }
         }
         
@@ -1635,6 +1683,26 @@ namespace ICSharpCode.ILSpy.Properties {
         public static string RemoveDeadSideEffectFreeCode {
             get {
                 return ResourceManager.GetString("RemoveDeadSideEffectFreeCode", resourceCulture);
+            }
+        }
+        
+        /// <summary>
+        ///   Looks up a localized string similar to Remove shell integration.
+        /// </summary>
+        public static string RemoveShellIntegration {
+            get {
+                return ResourceManager.GetString("RemoveShellIntegration", resourceCulture);
+            }
+        }
+        
+        /// <summary>
+        ///   Looks up a localized string similar to This will remove &quot;{0}&quot; from the registry at &quot;HKCU\Software\Classes\dllfile\shell\Open with ILSpy\command&quot; and &quot;HKCU\Software\Classes\exefile\shell\Open with ILSpy\command&quot;.
+        ///
+        ///Do you want to continue?.
+        /// </summary>
+        public static string RemoveShellIntegrationMessage {
+            get {
+                return ResourceManager.GetString("RemoveShellIntegrationMessage", resourceCulture);
             }
         }
         

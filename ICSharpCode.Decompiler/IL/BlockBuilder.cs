@@ -137,13 +137,12 @@ namespace ICSharpCode.Decompiler.IL
 						// this container is skipped (i.e. the loop will execute again)
 						// set ILRange to the last instruction offset inside the block.
 						if (start >= currentContainer.EndILOffset) {
-							Debug.Assert(currentBlock.HasILRange);
+							Debug.Assert(currentBlock.ILRangeIsEmpty);
 							currentBlock.AddILRange(new Interval(currentBlock.StartILOffset, start));
 						}
 					}
 					// Enter a handler if necessary
-					BlockContainer handlerContainer;
-					if (handlerContainers.TryGetValue(start, out handlerContainer)) {
+					if (handlerContainers.TryGetValue(start, out BlockContainer handlerContainer)) {
 						containerStack.Push(currentContainer);
 						currentContainer = handlerContainer;
 						currentBlock = handlerContainer.EntryPoint;
@@ -190,7 +189,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			if (currentBlock == null)
 				return;
-			Debug.Assert(currentBlock.HasILRange);
+			Debug.Assert(currentBlock.ILRangeIsEmpty);
 			currentBlock.SetILRange(new Interval(currentBlock.StartILOffset, currentILOffset));
 			if (fallthrough) {
 				if (currentBlock.Instructions.LastOrDefault() is SwitchInstruction switchInst && switchInst.Sections.Last().Body.MatchNop()) {

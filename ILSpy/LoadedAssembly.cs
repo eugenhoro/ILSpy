@@ -55,6 +55,7 @@ namespace ICSharpCode.ILSpy
 
 			this.assemblyTask = Task.Factory.StartNew(LoadAssembly, stream); // requires that this.fileName is set
 			this.shortName = Path.GetFileNameWithoutExtension(fileName);
+			this.resolver = new MyAssemblyResolver(this);
 		}
 
 		/// <summary>
@@ -72,7 +73,7 @@ namespace ICSharpCode.ILSpy
 		IDebugInfoProvider debugInfoProvider;
 
 		/// <summary>
-		/// Gets the Cecil ModuleDefinition.
+		/// Gets the <see cref="PEFile"/>.
 		/// </summary>
 		public Task<PEFile> GetPEFileAsync()
 		{
@@ -80,7 +81,7 @@ namespace ICSharpCode.ILSpy
 		}
 
 		/// <summary>
-		/// Gets the Cecil ModuleDefinition.
+		/// Gets the <see cref="PEFile"/>.
 		/// Returns null in case of load errors.
 		/// </summary>
 		public PEFile GetPEFileOrNull()
@@ -114,6 +115,22 @@ namespace ICSharpCode.ILSpy
 				MinimalCorlib.Instance);
 		}
 
+		ICompilation typeSystemWithOptions;
+		TypeSystemOptions currentTypeSystemOptions;
+
+		public ICompilation GetTypeSystemOrNull(TypeSystemOptions options)
+		{
+			if (typeSystemWithOptions != null && options == currentTypeSystemOptions)
+				return typeSystemWithOptions;
+			var module = GetPEFileOrNull();
+			if (module == null)
+				return null;
+			currentTypeSystemOptions = options;
+			return typeSystemWithOptions = new SimpleCompilation(
+				module.WithOptions(options | TypeSystemOptions.Uncached | TypeSystemOptions.KeepModifiers),
+				MinimalCorlib.Instance);
+		}
+
 		public AssemblyList AssemblyList => assemblyList;
 
 		public string FileName => fileName;
@@ -124,12 +141,17 @@ namespace ICSharpCode.ILSpy
 			get {
 				if (IsLoaded && !HasLoadError) {
 					var metadata = GetPEFileOrNull()?.Metadata;
-					string version = null;
-					if (metadata != null && metadata.IsAssembly)
-						version = metadata.GetAssemblyDefinition().Version?.ToString();
-					if (version == null)
+					string versionOrInfo = null;
+					if (metadata != null) {
+						if (metadata.IsAssembly) {
+							versionOrInfo = metadata.GetAssemblyDefinition().Version?.ToString();
+						} else {
+							versionOrInfo = ".netmodule";
+						}
+					}
+					if (versionOrInfo == null)
 						return ShortName;
-					return String.Format("{0} ({1})", ShortName, version);
+					return string.Format("{0} ({1})", ShortName, versionOrInfo);
 				} else {
 					return ShortName;
 				}
@@ -141,6 +163,8 @@ namespace ICSharpCode.ILSpy
 		public bool HasLoadError => assemblyTask.IsFaulted;
 
 		public bool IsAutoLoaded { get; set; }
+
+		public string PdbFileOverride { get; set; }
 
 		PEFile LoadAssembly(object state)
 		{
@@ -166,7 +190,8 @@ namespace ICSharpCode.ILSpy
 
 			if (DecompilerSettingsPanel.CurrentDecompilerSettings.UseDebugSymbols) {
 				try {
-					debugInfoProvider = DebugInfoUtils.LoadSymbols(module);
+					debugInfoProvider = DebugInfoUtils.FromFile(module, PdbFileOverride)
+						?? DebugInfoUtils.LoadSymbols(module);
 				} catch (IOException) {
 				} catch (UnauthorizedAccessException) {
 				} catch (InvalidOperationException) {
@@ -182,15 +207,27 @@ namespace ICSharpCode.ILSpy
 		[ThreadStatic]
 		static int assemblyLoadDisableCount;
 
+		public static IDisposable DisableAssemblyLoad(AssemblyList assemblyList)
+		{
+			assemblyLoadDisableCount++;
+			return new DecrementAssemblyLoadDisableCount(assemblyList);
+		}
+
 		public static IDisposable DisableAssemblyLoad()
 		{
 			assemblyLoadDisableCount++;
-			return new DecrementAssemblyLoadDisableCount();
+			return new DecrementAssemblyLoadDisableCount(MainWindow.Instance.CurrentAssemblyList);
 		}
 
 		sealed class DecrementAssemblyLoadDisableCount : IDisposable
 		{
 			bool disposed;
+			AssemblyList assemblyList;
+
+			public DecrementAssemblyLoadDisableCount(AssemblyList assemblyList)
+			{
+				this.assemblyList = assemblyList;
+			}
 
 			public void Dispose()
 			{
@@ -198,7 +235,7 @@ namespace ICSharpCode.ILSpy
 					disposed = true;
 					assemblyLoadDisableCount--;
 					// clear the lookup cache since we might have stored the lookups failed due to DisableAssemblyLoad()
-					MainWindow.Instance.CurrentAssemblyList.ClearCache();
+					assemblyList.ClearCache();
 				}
 			}
 		}
@@ -223,9 +260,11 @@ namespace ICSharpCode.ILSpy
 			}
 		}
 
+		readonly MyAssemblyResolver resolver;
+
 		public IAssemblyResolver GetAssemblyResolver()
 		{
-			return new MyAssemblyResolver(this);
+			return resolver;
 		}
 
 		/// <summary>
@@ -266,7 +305,8 @@ namespace ICSharpCode.ILSpy
 			}
 		}
 
-		static Dictionary<string, LoadedAssembly> loadingAssemblies = new Dictionary<string, LoadedAssembly>();
+		static readonly Dictionary<string, LoadedAssembly> loadingAssemblies = new Dictionary<string, LoadedAssembly>();
+		MyUniversalResolver universalResolver;
 
 		LoadedAssembly LookupReferencedAssemblyInternal(Decompiler.Metadata.IAssemblyReference fullName, bool isWinRT)
 		{
@@ -286,8 +326,11 @@ namespace ICSharpCode.ILSpy
 					}
 				}
 
-				var resolver = new MyUniversalResolver(this);
-				file = resolver.FindAssemblyFile(fullName);
+				if (universalResolver == null) {
+					universalResolver = new MyUniversalResolver(this);
+				}
+
+				file = universalResolver.FindAssemblyFile(fullName);
 
 				foreach (LoadedAssembly loaded in assemblyList.GetAssemblies()) {
 					if (loaded.FileName.Equals(file, StringComparison.OrdinalIgnoreCase)) {

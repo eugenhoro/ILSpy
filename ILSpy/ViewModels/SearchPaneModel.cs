@@ -16,15 +16,14 @@
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
+using System.Windows;
+
 namespace ICSharpCode.ILSpy.ViewModels
 {
+	[ExportToolPane(ContentId = PaneContentId)]
 	public class SearchPaneModel : ToolPaneModel
 	{
 		public const string PaneContentId = "searchPane";
-
-		public static SearchPaneModel Instance { get; } = new SearchPaneModel();
-
-		public override PanePosition DefaultPosition => PanePosition.Top;
 
 		private SearchPaneModel()
 		{
@@ -32,5 +31,13 @@ namespace ICSharpCode.ILSpy.ViewModels
 			Title = Properties.Resources.SearchPane_Search;
 			IsCloseable = true;
 		}
+
+		public override void Show()
+		{
+			base.Show();
+			MainWindow.Instance.SearchPane.Show();
+		}
+
+		public override DataTemplate Template => (DataTemplate)MainWindow.Instance.FindResource("SearchPaneTemplate");
 	}
 }

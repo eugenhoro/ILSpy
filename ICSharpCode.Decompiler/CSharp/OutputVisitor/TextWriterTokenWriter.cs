@@ -224,16 +224,9 @@ namespace ICSharpCode.Decompiler.CSharp.OutputVisitor
 			tokenWriter.WritePrimitiveValue(value);
 			return writer.ToString();
 		}
-
-		public override void WritePrimitiveValue(object value, string literalValue = null)
+		
+		public override void WritePrimitiveValue(object value, LiteralFormat format = LiteralFormat.None)
 		{
-			if (literalValue != null) {
-				textWriter.Write(literalValue);
-				column += literalValue.Length;
-				Length += literalValue.Length;
-				return;
-			}
-
 			if (value == null) {
 				// usually NullReferenceExpression should be used for this, but we'll handle it anyways
 				textWriter.Write("null");
@@ -343,15 +336,16 @@ namespace ICSharpCode.Decompiler.CSharp.OutputVisitor
 					number += ".0";
 				}
 				textWriter.Write(number);
+				column += number.Length;
 				Length += number.Length;
 			} else if (value is IFormattable) {
 				StringBuilder b = new StringBuilder();
-				//				if (primitiveExpression.LiteralFormat == LiteralFormat.HexadecimalNumber) {
-				//					b.Append("0x");
-				//					b.Append(((IFormattable)val).ToString("x", NumberFormatInfo.InvariantInfo));
-				//				} else {
-				b.Append(((IFormattable)value).ToString(null, NumberFormatInfo.InvariantInfo));
-				//				}
+				if (format == LiteralFormat.HexadecimalNumber) {
+					b.Append("0x");
+					b.Append(((IFormattable)value).ToString("X", NumberFormatInfo.InvariantInfo));
+				} else {
+					b.Append(((IFormattable)value).ToString(null, NumberFormatInfo.InvariantInfo));
+				}
 				if (value is uint || value is ulong) {
 					b.Append("u");
 				}
@@ -367,6 +361,11 @@ namespace ICSharpCode.Decompiler.CSharp.OutputVisitor
 				column += length;
 				Length += length;
 			}
+		}
+
+		public override void WriteInterpolatedText(string text)
+		{
+			textWriter.Write(ConvertString(text));
 		}
 
 		/// <summary>
@@ -475,6 +474,21 @@ namespace ICSharpCode.Decompiler.CSharp.OutputVisitor
 				}
 			}
 			return sb.ToString();
+		}
+
+		public static bool ContainsNonPrintableIdentifierChar(string identifier)
+		{
+			if (string.IsNullOrEmpty(identifier))
+				return false;
+
+			for (int i = 0; i < identifier.Length; i++) {
+				if (char.IsWhiteSpace(identifier[i]))
+					return true;
+				if (!IsPrintableIdentifierChar(identifier, i))
+					return true;
+			}
+
+			return false;
 		}
 
 		static bool IsPrintableIdentifierChar(string identifier, int index)

@@ -48,7 +48,7 @@ namespace ICSharpCode.Decompiler.DebugInfo
 		readonly ImportScopeInfo globalImportScope = new ImportScopeInfo();
 		ImportScopeInfo currentImportScope;
 		List<ImportScopeInfo> importScopes = new List<ImportScopeInfo>();
-		List<(MethodDefinitionHandle Method, ImportScopeInfo Import, int Offset, int Length, HashSet<ILVariable> Locals)> localScopes = new List<(MethodDefinitionHandle Method, ImportScopeInfo Import, int Offset, int Length, HashSet<ILVariable> Locals)>();
+		internal List<(MethodDefinitionHandle Method, ImportScopeInfo Import, int Offset, int Length, HashSet<ILVariable> Locals)> LocalScopes { get; } = new List<(MethodDefinitionHandle Method, ImportScopeInfo Import, int Offset, int Length, HashSet<ILVariable> Locals)>();
 		List<ILFunction> functions = new List<ILFunction>();
 
 		/// <summary>
@@ -64,24 +64,11 @@ namespace ICSharpCode.Decompiler.DebugInfo
 			this.currentImportScope = globalImportScope;
 		}
 
-		public void Generate(MetadataBuilder metadata, ImportScopeHandle globalImportScope)
+		public void GenerateImportScopes(MetadataBuilder metadata, ImportScopeHandle globalImportScope)
 		{
 			foreach (var scope in importScopes) {
 				var blob = EncodeImports(metadata, scope);
 				scope.Handle = metadata.AddImportScope(scope.Parent == null ? globalImportScope : scope.Parent.Handle, blob);
-			}
-
-			foreach (var localScope in localScopes) {
-				int nextRow = metadata.GetRowCount(TableIndex.LocalVariable) + 1;
-				var firstLocalVariable = MetadataTokens.LocalVariableHandle(nextRow);
-				
-				foreach (var local in localScope.Locals.OrderBy(l => l.Index)) {
-					var name = local.Name != null ? metadata.GetOrAddString(local.Name) : default;
-					metadata.AddLocalVariable(LocalVariableAttributes.None, local.Index.Value, name);
-				}
-
-				metadata.AddLocalScope(localScope.Method, localScope.Import.Handle, firstLocalVariable,
-					default, localScope.Offset, localScope.Length);
 			}
 		}
 
@@ -146,12 +133,67 @@ namespace ICSharpCode.Decompiler.DebugInfo
 			HandleMethod(anonymousMethodExpression);
 		}
 
+		public override void VisitQueryFromClause(QueryFromClause queryFromClause)
+		{
+			if (queryFromClause.Parent.FirstChild != queryFromClause) {
+				HandleMethod(queryFromClause);
+			} else {
+				base.VisitQueryFromClause(queryFromClause);
+			}
+		}
+
+		public override void VisitQueryGroupClause(QueryGroupClause queryGroupClause)
+		{
+			var annotation = queryGroupClause.Annotation<QueryGroupClauseAnnotation>();
+			if (annotation == null) {
+				base.VisitQueryGroupClause(queryGroupClause);
+				return;
+			}
+			HandleMethod(queryGroupClause.Projection, annotation.ProjectionLambda);
+			HandleMethod(queryGroupClause.Key, annotation.KeyLambda);
+		}
+
+		public override void VisitQueryJoinClause(QueryJoinClause queryJoinClause)
+		{
+			var annotation = queryJoinClause.Annotation<QueryJoinClauseAnnotation>();
+			if (annotation == null) {
+				base.VisitQueryJoinClause(queryJoinClause);
+				return;
+			}
+			HandleMethod(queryJoinClause.OnExpression, annotation.OnLambda);
+			HandleMethod(queryJoinClause.EqualsExpression, annotation.EqualsLambda);
+		}
+
+		public override void VisitQueryLetClause(QueryLetClause queryLetClause)
+		{
+			HandleMethod(queryLetClause);
+		}
+
+		public override void VisitQueryOrdering(QueryOrdering queryOrdering)
+		{
+			HandleMethod(queryOrdering);
+		}
+
+		public override void VisitQuerySelectClause(QuerySelectClause querySelectClause)
+		{
+			HandleMethod(querySelectClause);
+		}
+
+		public override void VisitQueryWhereClause(QueryWhereClause queryWhereClause)
+		{
+			HandleMethod(queryWhereClause);
+		}
+
 		void HandleMethod(AstNode node)
+		{
+			HandleMethod(node, node.Annotation<ILFunction>());
+		}
+
+		void HandleMethod(AstNode node, ILFunction function)
 		{
 			// Look into method body, e.g. in order to find lambdas
 			VisitChildren(node);
 
-			var function = node.Annotation<ILFunction>();
 			if (function == null || function.Method == null || function.Method.MetadataToken.IsNil)
 				return;
 			this.functions.Add(function);
@@ -185,7 +227,7 @@ namespace ICSharpCode.Decompiler.DebugInfo
 				}
 			}
 
-			localScopes.Add(((MethodDefinitionHandle)method.MetadataToken, currentImportScope,
+			LocalScopes.Add(((MethodDefinitionHandle)method.MetadataToken, currentImportScope,
 				0, methodBody.GetCodeSize(), localVariables));
 		}
 	}

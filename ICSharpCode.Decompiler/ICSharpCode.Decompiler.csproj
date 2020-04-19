@@ -6,7 +6,7 @@
     <Description>IL decompiler engine</Description>
     <Company>ic#code</Company>
     <Product>ILSpy</Product>
-    <Copyright>Copyright 2011-2019 AlphaSierraPapa for the SharpDevelop Team</Copyright>
+    <Copyright>Copyright 2011-2020 AlphaSierraPapa for the SharpDevelop Team</Copyright>
     <NeutralLanguage>en-US</NeutralLanguage>
     <GenerateAssemblyVersionAttribute>False</GenerateAssemblyVersionAttribute>
     <GenerateAssemblyFileVersionAttribute>False</GenerateAssemblyFileVersionAttribute>
@@ -61,8 +61,12 @@
     <Compile Include="CSharp\Annotations.cs" />
     <Compile Include="CSharp\CallBuilder.cs" />
     <Compile Include="CSharp\CSharpLanguageVersion.cs" />
+    <Compile Include="CSharp\OutputVisitor\GenericGrammarAmbiguityVisitor.cs" />
     <Compile Include="CSharp\RequiredNamespaceCollector.cs" />
     <Compile Include="CSharp\SequencePointBuilder.cs" />
+    <Compile Include="CSharp\TranslatedStatement.cs" />
+    <Compile Include="DebugInfo\KnownGuids.cs" />
+    <Compile Include="Disassembler\DisassemblerSignatureTypeProvider.cs" />
     <Compile Include="Documentation\XmlDocumentationElement.cs" />
     <Compile Include="IL\ControlFlow\AwaitInFinallyTransform.cs" />
     <Compile Include="Solution\ProjectId.cs" />
@@ -621,5 +625,15 @@
   <ItemGroup>
     <Service Include="{508349b6-6b84-4df5-91f0-309beebad82d}" />
   </ItemGroup>
+
+  <Target Name="ILSpyUpdateAssemblyInfo" BeforeTargets="BeforeBuild">
+    <PropertyGroup Condition=" '$(OS)' == 'Windows_NT' ">
+      <UpdateAssemblyInfo>powershell -NoProfile -ExecutionPolicy Bypass -File BuildTools/update-assemblyinfo.ps1 $(Configuration)</UpdateAssemblyInfo>
+    </PropertyGroup>
+    <PropertyGroup Condition=" '$(OS)' != 'Windows_NT' ">
+      <UpdateAssemblyInfo>pwsh -NoProfile -ExecutionPolicy Bypass -File BuildTools/update-assemblyinfo.ps1 $(Configuration)</UpdateAssemblyInfo>
+    </PropertyGroup>
+    <Exec WorkingDirectory=".." Command="$(UpdateAssemblyInfo)" Timeout="60000" />
+  </Target>
   
 </Project>

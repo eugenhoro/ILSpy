@@ -33,16 +33,8 @@ Features
 License
 -------
 
-ILSpy is distributed under the MIT License.
-
-Included open-source libraries:
- * Mono.Cecil: MIT License (part of ILSpy)
- * LightJson: MIT License (part of ICSharpCode.Decompiler)
- * Humanizer: MIT License (part of ICSharpCode.Decompiler)
- * AvalonEdit: MIT License
- * SharpTreeView: LGPL
- * ILSpy.BamlDecompiler: MIT license
- * CommandLineUtils: Apache License 2.0 (part of ICSharpCode.Decompiler.Console)
+ILSpy is distributed under the MIT License. Please see the [About](doc/ILSpyAboutPage.txt) doc for details, 
+as well as [third party notices](doc/third-party-notices.txt) for included open-source libraries.
 
 How to build
 ------------
@@ -67,6 +59,7 @@ If this problem occurs, please manually install the .NET Core 3.1 SDK from [here
 Unix / Mac:
 - Make sure .NET Core 2.1 LTS Runtime is installed (you can get it here: https://get.dot.net).
 - Make sure [.NET Core 3.1 SDK](https://dotnet.microsoft.com/download/dotnet-core/3.1) is installed.
+- Make sure [PowerShell](https://github.com/PowerShell/PowerShell) is installed (formerly known as PowerShell Core)
 - Check out the repository using git.
 - Execute `git submodule update --init --recursive` to download the ILSpy-Tests submodule (used by some test cases).
 - Use `dotnet build Frontends.sln` to build the non-Windows flavors of ILSpy (.NET Core Global Tool and PowerShell Core).

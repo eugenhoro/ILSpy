@@ -31,7 +31,6 @@ using System.Text;
 using ICSharpCode.Decompiler.CSharp;
 using ICSharpCode.Decompiler.CSharp.OutputVisitor;
 using ICSharpCode.Decompiler.CSharp.Syntax;
-using ICSharpCode.Decompiler.CSharp.TypeSystem;
 using ICSharpCode.Decompiler.IL;
 using ICSharpCode.Decompiler.Metadata;
 using ICSharpCode.Decompiler.TypeSystem;
@@ -41,13 +40,6 @@ namespace ICSharpCode.Decompiler.DebugInfo
 {
 	public class PortablePdbWriter
 	{
-		static readonly Guid CSharpLanguageGuid = new Guid("3f5162f8-07c6-11d3-9053-00c04fa302a1");
-
-		static readonly Guid DebugInfoEmbeddedSource = new Guid("0e8a571b-6926-466e-b4ad-8ab04611f5fe");
-		static readonly Guid MethodSteppingInformationBlobId = new Guid("54FD2AC5-E925-401A-9C2A-F94F171072F8");
-
-		static readonly Guid HashAlgorithmSHA1 = new Guid("ff1816ec-aa5e-4d10-87f7-6f4963833460");
-		static readonly Guid HashAlgorithmSHA256 = new Guid("8829d00f-11b8-4213-878b-770e8597ac16");
 		static readonly FileVersionInfo decompilerVersion = FileVersionInfo.GetVersionInfo(typeof(CSharpDecompiler).Assembly.Location);
 
 		public static bool HasCodeViewDebugDirectoryEntry(PEFile file)
@@ -63,16 +55,21 @@ namespace ICSharpCode.Decompiler.DebugInfo
 
 			var sequencePointBlobs = new Dictionary<MethodDefinitionHandle, (DocumentHandle Document, BlobHandle SequencePoints)>();
 			var emptyList = new List<SequencePoint>();
+			var localScopes = new List<(MethodDefinitionHandle Method, ImportScopeInfo Import, int Offset, int Length, HashSet<ILVariable> Locals)>();
 			var stateMachineMethods = new List<(MethodDefinitionHandle MoveNextMethod, MethodDefinitionHandle KickoffMethod)>();
-			var customDocumentDebugInfo = new List<(DocumentHandle Parent, GuidHandle Guid, BlobHandle Blob)>();
+			var customDebugInfo = new List<(EntityHandle Parent, GuidHandle Guid, BlobHandle Blob)>();
 			var customMethodDebugInfo = new List<(MethodDefinitionHandle Parent, GuidHandle Guid, BlobHandle Blob)>();
 			var globalImportScope = metadata.AddImportScope(default, default);
 
-			foreach (var handle in reader.GetTopLevelTypeDefinitions()) {
-				var type = reader.GetTypeDefinition(handle);
+			string BuildFileNameFromTypeName(TypeDefinitionHandle handle)
+			{
+				var typeName = handle.GetFullTypeName(reader).TopLevelTypeName;
+				return Path.Combine(WholeProjectDecompiler.CleanUpFileName(typeName.Namespace), WholeProjectDecompiler.CleanUpFileName(typeName.Name) + ".cs");
+			}
 
+			foreach (var sourceFile in reader.GetTopLevelTypeDefinitions().GroupBy(BuildFileNameFromTypeName)) {
 				// Generate syntax tree
-				var syntaxTree = decompiler.DecompileTypes(new[] { handle });
+				var syntaxTree = decompiler.DecompileTypes(sourceFile);
 				if (!syntaxTree.HasChildren)
 					continue;
 
@@ -90,20 +87,22 @@ namespace ICSharpCode.Decompiler.DebugInfo
 
 				lock (metadata) {
 					var sourceBlob = WriteSourceToBlob(metadata, sourceText, out var sourceCheckSum);
-					var name = metadata.GetOrAddDocumentName(type.GetFullTypeName(reader).ReflectionName.Replace('.', Path.DirectorySeparatorChar) + ".cs");
+					var name = metadata.GetOrAddDocumentName(sourceFile.Key);
 
 					// Create Document(Handle)
 					var document = metadata.AddDocument(name,
-						hashAlgorithm: metadata.GetOrAddGuid(HashAlgorithmSHA256),
+						hashAlgorithm: metadata.GetOrAddGuid(KnownGuids.HashAlgorithmSHA256),
 						hash: metadata.GetOrAddBlob(sourceCheckSum),
-						language: metadata.GetOrAddGuid(CSharpLanguageGuid));
+						language: metadata.GetOrAddGuid(KnownGuids.CSharpLanguageGuid));
 
 					// Add embedded source to the PDB
-					customDocumentDebugInfo.Add((document,
-						metadata.GetOrAddGuid(DebugInfoEmbeddedSource),
+					customDebugInfo.Add((document,
+						metadata.GetOrAddGuid(KnownGuids.EmbeddedSource),
 						sourceBlob));
 
-					debugInfoGen.Generate(metadata, globalImportScope);
+					debugInfoGen.GenerateImportScopes(metadata, globalImportScope);
+
+					localScopes.AddRange(debugInfoGen.LocalScopes);
 
 					foreach (var function in debugInfoGen.Functions) {
 						var method = function.MoveNextMethod ?? function.Method;
@@ -115,10 +114,15 @@ namespace ICSharpCode.Decompiler.DebugInfo
 								(MethodDefinitionHandle)function.MoveNextMethod.MetadataToken,
 								(MethodDefinitionHandle)function.Method.MetadataToken
 							));
+							customDebugInfo.Add((
+								function.MoveNextMethod.MetadataToken,
+								metadata.GetOrAddGuid(KnownGuids.StateMachineHoistedLocalScopes),
+								metadata.GetOrAddBlob(BuildStateMachineHoistedLocalScopes(function))
+							));
 						}
 						if (function.IsAsync) {
 							customMethodDebugInfo.Add((methodHandle,
-								metadata.GetOrAddGuid(MethodSteppingInformationBlobId),
+								metadata.GetOrAddGuid(KnownGuids.MethodSteppingInformation),
 								metadata.GetOrAddBlob(function.AsyncDebugInfo.BuildBlob(methodHandle))));
 						}
 					}
@@ -135,6 +139,28 @@ namespace ICSharpCode.Decompiler.DebugInfo
 				}
 			}
 
+			localScopes.Sort((x, y) => {
+				if (x.Method != y.Method) {
+					return MetadataTokens.GetRowNumber(x.Method) - MetadataTokens.GetRowNumber(y.Method);
+				}
+				if (x.Offset != y.Offset) {
+					return x.Offset - y.Offset;
+				}
+				return y.Length - x.Length;
+			});
+			foreach (var localScope in localScopes) {
+				int nextRow = metadata.GetRowCount(TableIndex.LocalVariable) + 1;
+				var firstLocalVariable = MetadataTokens.LocalVariableHandle(nextRow);
+
+				foreach (var local in localScope.Locals.OrderBy(l => l.Index)) {
+					var localVarName = local.Name != null ? metadata.GetOrAddString(local.Name) : default;
+					metadata.AddLocalVariable(LocalVariableAttributes.None, local.Index.Value, localVarName);
+				}
+
+				metadata.AddLocalScope(localScope.Method, localScope.Import.Handle, firstLocalVariable,
+					default, localScope.Offset, localScope.Length);
+			}
+
 			stateMachineMethods.SortBy(row => MetadataTokens.GetRowNumber(row.MoveNextMethod));
 			foreach (var row in stateMachineMethods) {
 				metadata.AddStateMachineMethod(row.MoveNextMethod, row.KickoffMethod);
@@ -143,8 +169,8 @@ namespace ICSharpCode.Decompiler.DebugInfo
 			foreach (var row in customMethodDebugInfo) {
 				metadata.AddCustomDebugInformation(row.Parent, row.Guid, row.Blob);
 			}
-			customDocumentDebugInfo.SortBy(row => MetadataTokens.GetRowNumber(row.Parent));
-			foreach (var row in customDocumentDebugInfo) {
+			customDebugInfo.SortBy(row => MetadataTokens.GetRowNumber(row.Parent));
+			foreach (var row in customDebugInfo) {
 				metadata.AddCustomDebugInformation(row.Parent, row.Guid, row.Blob);
 			}
 
@@ -174,6 +200,16 @@ namespace ICSharpCode.Decompiler.DebugInfo
 				else
 					sequencePointBlobs.Add(method, (default, default));
 			}
+		}
+
+		static BlobBuilder BuildStateMachineHoistedLocalScopes(ILFunction function)
+		{
+			var builder = new BlobBuilder();
+			foreach (var variable in function.Variables.Where(v => v.StateMachineField != null).OrderBy(v => MetadataTokens.GetRowNumber(v.StateMachineField.MetadataToken))) {
+				builder.WriteUInt32(0);
+				builder.WriteUInt32((uint)function.CodeSize);
+			}
+			return builder;
 		}
 
 		static BlobHandle WriteSourceToBlob(MetadataBuilder metadata, string sourceText, out byte[] sourceCheckSum)
@@ -261,7 +297,6 @@ namespace ICSharpCode.Decompiler.DebugInfo
 		{
 			StringWriter w = new StringWriter();
 			TokenWriter tokenWriter = new TextWriterTokenWriter(w);
-			syntaxTree.AcceptVisitor(new InsertParenthesesVisitor { InsertParenthesesForReadability = true });
 			tokenWriter = TokenWriter.WrapInWriterThatSetsLocationsInAST(tokenWriter);
 			syntaxTree.AcceptVisitor(new CSharpOutputVisitor(tokenWriter, settings.CSharpFormattingOptions));
 			return w.ToString();

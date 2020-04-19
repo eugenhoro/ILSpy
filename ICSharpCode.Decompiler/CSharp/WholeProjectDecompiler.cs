@@ -17,7 +17,6 @@
 // DEALINGS IN THE SOFTWARE.
 
 using System;
-using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -89,6 +88,8 @@ namespace ICSharpCode.Decompiler.CSharp
 		public string StrongNameKeyFile { get; set; }
 
 		public int MaxDegreeOfParallelism { get; set; } = Environment.ProcessorCount;
+
+		public IProgress<DecompilationProgress> ProgressIndicator { get; set; }
 		#endregion
 
 		// per-run members
@@ -126,18 +127,19 @@ namespace ICSharpCode.Decompiler.CSharp
 			return WriteProjectFile(projectFileWriter, files, moduleDefinition);
 		}
 
-		enum LanguageTargets
-		{
-			None,
-			Portable
-		}
-
 		#region WriteProjectFile
 		ProjectId WriteProjectFile(TextWriter writer, IEnumerable<Tuple<string, string>> files, Metadata.PEFile module)
 		{
 			const string ns = "http://schemas.microsoft.com/developer/msbuild/2003";
 			string platformName = GetPlatformName(module);
 			Guid guid = this.ProjectGuid ?? Guid.NewGuid();
+			var targetFramework = DetectTargetFramework(module);
+
+			List<Guid> typeGuids = new List<Guid>();
+			if (targetFramework.IsPortableClassLibrary)
+				typeGuids.Add(ProjectTypeGuids.PortableLibrary);
+			typeGuids.Add(ProjectTypeGuids.CSharpWindows);
+			// TODO: .NET core support
 
 			using (XmlTextWriter w = new XmlTextWriter(writer)) {
 				w.Formatting = Formatting.Indented;
@@ -148,6 +150,7 @@ namespace ICSharpCode.Decompiler.CSharp
 
 				w.WriteStartElement("PropertyGroup");
 				w.WriteElementString("ProjectGuid", guid.ToString("B").ToUpperInvariant());
+				w.WriteElementString("ProjectTypeGuids", string.Join(";", typeGuids.Select(g => g.ToString("B").ToUpperInvariant())));
 
 				w.WriteStartElement("Configuration");
 				w.WriteAttributeString("Condition", " '$(Configuration)' == '' ");
@@ -178,56 +181,15 @@ namespace ICSharpCode.Decompiler.CSharp
 				w.WriteElementString("LangVersion", LanguageVersion.ToString().Replace("CSharp", "").Replace('_', '.'));
 
 				w.WriteElementString("AssemblyName", module.Name);
-				bool useTargetFrameworkAttribute = false;
-				LanguageTargets languageTargets = LanguageTargets.None;
-				string targetFramework = module.Reader.DetectTargetFrameworkId();
-				int frameworkVersionNumber = 0;
-				if (!string.IsNullOrEmpty(targetFramework)) {
-					string[] frameworkParts = targetFramework.Split(',');
-					string frameworkIdentifier = frameworkParts.FirstOrDefault(a => !a.StartsWith("Version=", StringComparison.OrdinalIgnoreCase) && !a.StartsWith("Profile=", StringComparison.OrdinalIgnoreCase));
-					if (frameworkIdentifier != null) {
-						w.WriteElementString("TargetFrameworkIdentifier", frameworkIdentifier);
-						switch (frameworkIdentifier) {
-							case ".NETPortable":
-								languageTargets = LanguageTargets.Portable;
-								break;
-						}
-					}
-					string frameworkVersion = frameworkParts.FirstOrDefault(a => a.StartsWith("Version=", StringComparison.OrdinalIgnoreCase));
-					if (frameworkVersion != null) {
-						w.WriteElementString("TargetFrameworkVersion", frameworkVersion.Substring("Version=".Length));
-						useTargetFrameworkAttribute = true;
-						frameworkVersionNumber = int.Parse(frameworkVersion.Substring("Version=v".Length).Replace(".", ""));
-						if (frameworkVersionNumber < 100) frameworkVersionNumber *= 10;
-					}
-					string frameworkProfile = frameworkParts.FirstOrDefault(a => a.StartsWith("Profile=", StringComparison.OrdinalIgnoreCase));
-					if (frameworkProfile != null)
-						w.WriteElementString("TargetFrameworkProfile", frameworkProfile.Substring("Profile=".Length));
-				}
-				if (!useTargetFrameworkAttribute) {
-					switch (module.GetRuntime()) {
-						case Metadata.TargetRuntime.Net_1_0:
-							frameworkVersionNumber = 100;
-							w.WriteElementString("TargetFrameworkVersion", "v1.0");
-							break;
-						case Metadata.TargetRuntime.Net_1_1:
-							frameworkVersionNumber = 110;
-							w.WriteElementString("TargetFrameworkVersion", "v1.1");
-							break;
-						case Metadata.TargetRuntime.Net_2_0:
-							frameworkVersionNumber = 200;
-							w.WriteElementString("TargetFrameworkVersion", "v2.0");
-							// TODO: Detect when .NET 3.0/3.5 is required
-							break;
-						default:
-							frameworkVersionNumber = 400;
-							w.WriteElementString("TargetFrameworkVersion", "v4.0");
-							break;
-					}
-				}
+				if (targetFramework.TargetFrameworkIdentifier != null)
+					w.WriteElementString("TargetFrameworkIdentifier", targetFramework.TargetFrameworkIdentifier);
+				if (targetFramework.TargetFrameworkVersion != null)
+					w.WriteElementString("TargetFrameworkVersion", targetFramework.TargetFrameworkVersion);
+				if (targetFramework.TargetFrameworkProfile != null)
+					w.WriteElementString("TargetFrameworkProfile", targetFramework.TargetFrameworkProfile);
 				w.WriteElementString("WarningLevel", "4");
 				w.WriteElementString("AllowUnsafeBlocks", "True");
-				
+
 				if (StrongNameKeyFile != null) {
 					w.WriteElementString("SignAssembly", "True");
 					w.WriteElementString("AssemblyOriginatorKeyFile", Path.GetFileName(StrongNameKeyFile));
@@ -238,7 +200,7 @@ namespace ICSharpCode.Decompiler.CSharp
 				w.WriteStartElement("PropertyGroup"); // platform-specific
 				w.WriteAttributeString("Condition", " '$(Platform)' == '" + platformName + "' ");
 				w.WriteElementString("PlatformTarget", platformName);
-				if (frameworkVersionNumber > 400 && platformName == "AnyCPU" && (module.Reader.PEHeaders.CorHeader.Flags & CorFlags.Prefers32Bit) == 0) {
+				if (targetFramework.VersionNumber > 400 && platformName == "AnyCPU" && (module.Reader.PEHeaders.CorHeader.Flags & CorFlags.Prefers32Bit) == 0) {
 					w.WriteElementString("Prefer32Bit", "false");
 				}
 				w.WriteEndElement(); // </PropertyGroup> (platform-specific)
@@ -285,23 +247,70 @@ namespace ICSharpCode.Decompiler.CSharp
 					}
 					w.WriteEndElement();
 				}
-				switch (languageTargets) {
-					case LanguageTargets.Portable:
-						w.WriteStartElement("Import");
-						w.WriteAttributeString("Project", "$(MSBuildExtensionsPath32)\\Microsoft\\Portable\\$(TargetFrameworkVersion)\\Microsoft.Portable.CSharp.targets");
-						w.WriteEndElement();
-						break;
-					default:
-						w.WriteStartElement("Import");
-						w.WriteAttributeString("Project", "$(MSBuildToolsPath)\\Microsoft.CSharp.targets");
-						w.WriteEndElement();
-						break;
+				if (targetFramework.IsPortableClassLibrary) {
+					w.WriteStartElement("Import");
+					w.WriteAttributeString("Project", "$(MSBuildExtensionsPath32)\\Microsoft\\Portable\\$(TargetFrameworkVersion)\\Microsoft.Portable.CSharp.targets");
+					w.WriteEndElement();
+				} else {
+					w.WriteStartElement("Import");
+					w.WriteAttributeString("Project", "$(MSBuildToolsPath)\\Microsoft.CSharp.targets");
+					w.WriteEndElement();
 				}
 
 				w.WriteEndDocument();
 			}
 
-			return new ProjectId(platformName, guid);
+			return new ProjectId(platformName, guid, ProjectTypeGuids.CSharpWindows);
+		}
+
+		struct TargetFramework
+		{
+			public string TargetFrameworkIdentifier;
+			public string TargetFrameworkVersion;
+			public string TargetFrameworkProfile;
+			public int VersionNumber;
+			public bool IsPortableClassLibrary => TargetFrameworkIdentifier == ".NETPortable";
+		}
+
+		private TargetFramework DetectTargetFramework(PEFile module)
+		{
+			TargetFramework result = default;
+
+			switch (module.GetRuntime()) {
+				case Metadata.TargetRuntime.Net_1_0:
+					result.VersionNumber = 100;
+					result.TargetFrameworkVersion = "v1.0";
+					break;
+				case Metadata.TargetRuntime.Net_1_1:
+					result.VersionNumber = 110;
+					result.TargetFrameworkVersion = "v1.1";
+					break;
+				case Metadata.TargetRuntime.Net_2_0:
+					result.VersionNumber = 200;
+					result.TargetFrameworkVersion = "v2.0";
+					// TODO: Detect when .NET 3.0/3.5 is required
+					break;
+				default:
+					result.VersionNumber = 400;
+					result.TargetFrameworkVersion = "v4.0";
+					break;
+			}
+
+			string targetFramework = module.Reader.DetectTargetFrameworkId();
+			if (!string.IsNullOrEmpty(targetFramework)) {
+				string[] frameworkParts = targetFramework.Split(',');
+				result.TargetFrameworkIdentifier = frameworkParts.FirstOrDefault(a => !a.StartsWith("Version=", StringComparison.OrdinalIgnoreCase) && !a.StartsWith("Profile=", StringComparison.OrdinalIgnoreCase));
+				string frameworkVersion = frameworkParts.FirstOrDefault(a => a.StartsWith("Version=", StringComparison.OrdinalIgnoreCase));
+				if (frameworkVersion != null) {
+					result.TargetFrameworkVersion = frameworkVersion.Substring("Version=".Length);
+					result.VersionNumber = int.Parse(frameworkVersion.Substring("Version=v".Length).Replace(".", ""));
+					if (result.VersionNumber < 100) result.VersionNumber *= 10;
+				}
+				string frameworkProfile = frameworkParts.FirstOrDefault(a => a.StartsWith("Profile=", StringComparison.OrdinalIgnoreCase));
+				if (frameworkProfile != null)
+					result.TargetFrameworkProfile = frameworkProfile.Substring("Profile=".Length);
+			}
+			return result;
 		}
 
 		protected virtual bool IsGacAssembly(Metadata.IAssemblyReference r, Metadata.PEFile asm)
@@ -364,6 +373,8 @@ namespace ICSharpCode.Decompiler.CSharp
 						return Path.Combine(dir, file);
 					}
 				}, StringComparer.OrdinalIgnoreCase).ToList();
+			int total = files.Count;
+			var progress = this.ProgressIndicator;
 			DecompilerTypeSystem ts = new DecompilerTypeSystem(module, AssemblyResolver, settings);
 			Parallel.ForEach(
 				files,
@@ -382,6 +393,7 @@ namespace ICSharpCode.Decompiler.CSharp
 							throw new DecompilerException(module, $"Error decompiling for '{file.Key}'", innerException);
 						}
 					}
+					progress?.Report(new DecompilationProgress(total, file.Key));
 				});
 			return files.Select(f => Tuple.Create("Compile", f.Key)).Concat(WriteAssemblyInfo(ts, cancellationToken));
 		}
@@ -459,7 +471,7 @@ namespace ICSharpCode.Decompiler.CSharp
 				} catch (EndOfStreamException) {
 					// if the .resources can't be decoded, just save them as-is
 				}
-			} 
+			}
 			using (FileStream fs = new FileStream(Path.Combine(targetDirectory, fileName), FileMode.Create, FileAccess.Write)) {
 				entryStream.CopyTo(fs);
 			}
@@ -508,7 +520,44 @@ namespace ICSharpCode.Decompiler.CSharp
 			}
 			if (b.Length == 0)
 				b.Append('-');
-			return b.ToString();
+			string name = b.ToString();
+			if (IsReservedFileSystemName(name))
+				return name + "_";
+			else if (name == ".")
+				return "_";
+			else
+				return name;
+		}
+
+		static bool IsReservedFileSystemName(string name)
+		{
+			switch (name.ToUpperInvariant()) {
+				case "AUX":
+				case "COM1":
+				case "COM2":
+				case "COM3":
+				case "COM4":
+				case "COM5":
+				case "COM6":
+				case "COM7":
+				case "COM8":
+				case "COM9":
+				case "CON":
+				case "LPT1":
+				case "LPT2":
+				case "LPT3":
+				case "LPT4":
+				case "LPT5":
+				case "LPT6":
+				case "LPT7":
+				case "LPT8":
+				case "LPT9":
+				case "NUL":
+				case "PRN":
+					return true;
+				default:
+					return false;
+			}
 		}
 
 		public static string GetPlatformName(Metadata.PEFile module)
@@ -535,6 +584,18 @@ namespace ICSharpCode.Decompiler.CSharp
 				default:
 					return architecture.ToString();
 			}
+		}
+	}
+
+	public readonly struct DecompilationProgress
+	{
+		public readonly int TotalNumberOfFiles;
+		public readonly string Status;
+
+		public DecompilationProgress(int total, string status = null)
+		{
+			this.TotalNumberOfFiles = total;
+			this.Status = status ?? "";
 		}
 	}
 }

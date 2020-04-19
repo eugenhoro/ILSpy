@@ -9,7 +9,7 @@ using ICSharpCode.ILSpy.ViewModels;
 
 namespace ICSharpCode.ILSpy
 {
-	public partial class DebugSteps : UserControl, IPane
+	public partial class DebugSteps : UserControl
 	{
 		static readonly ILAstWritingOptions writingOptions = new ILAstWritingOptions {
 			UseFieldSugar = true,
@@ -79,18 +79,6 @@ namespace ICSharpCode.ILSpy
 #endif
 		}
 
-		void IPane.Closed()
-		{
-#if DEBUG
-			MainWindow.Instance.SessionSettings.FilterSettings.PropertyChanged -= FilterSettings_PropertyChanged;
-			MainWindow.Instance.SelectionChanged -= SelectionChanged;
-			writingOptions.PropertyChanged -= WritingOptions_PropertyChanged;
-			if (language != null) {
-				language.StepperUpdated -= ILAstStepperUpdated;
-			}
-#endif
-		}
-
 		private void ShowStateAfter_Click(object sender, RoutedEventArgs e)
 		{
 			Stepper.Node n = (Stepper.Node)tree.SelectedItem;
@@ -118,13 +106,13 @@ namespace ICSharpCode.ILSpy
 		{
 			lastSelectedStep = step;
 			var window = MainWindow.Instance;
-			var state = DockWorkspace.Instance.GetState();
-			DockWorkspace.Instance.GetTextView().DecompileAsync(window.CurrentLanguage, window.SelectedNodes,
+			var state = DockWorkspace.Instance.ActiveTabPage.GetState();
+			DockWorkspace.Instance.ActiveTabPage.ShowTextViewAsync(textView => textView.DecompileAsync(window.CurrentLanguage, window.SelectedNodes,
 				new DecompilationOptions(window.CurrentLanguageVersion) {
 					StepLimit = step,
 					IsDebug = isDebug,
-					TextViewState = state
-				});
+					TextViewState = state as TextView.DecompilerTextViewState
+				}));
 		}
 
 		private void tree_KeyDown(object sender, KeyEventArgs e)

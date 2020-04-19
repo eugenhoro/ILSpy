@@ -82,7 +82,7 @@ namespace ICSharpCode.ILSpy.TreeNodes
 
 		public override bool CanDrop(DragEventArgs e, int index)
 		{
-			e.Effects = DragDropEffects.Move;
+			e.Effects = DragDropEffects.Move | DragDropEffects.Copy | DragDropEffects.Link;
 			if (e.Data.GetDataPresent(AssemblyTreeNode.DataFormat))
 				return true;
 			else if (e.Data.GetDataPresent(DataFormats.FileDrop))
@@ -200,7 +200,7 @@ namespace ICSharpCode.ILSpy.TreeNodes
 				return null;
 			App.Current.Dispatcher.VerifyAccess();
 			foreach (AssemblyTreeNode node in this.Children) {
-				if (node.LoadedAssembly.IsLoaded && node.LoadedAssembly.GetPEFileOrNull() == module)
+				if (node.LoadedAssembly.IsLoaded && node.LoadedAssembly.GetPEFileOrNull()?.FileName == module.FileName)
 					return node;
 			}
 			return null;

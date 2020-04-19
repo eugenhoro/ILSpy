@@ -61,7 +61,7 @@ namespace ICSharpCode.Decompiler.IL.ControlFlow
 			this.context = context;
 			foreach (var container in function.Descendants.OfType<BlockContainer>()) {
 				context.CancellationToken.ThrowIfCancellationRequested();
-				DetectNullSafeArrayToPointer(container);
+				DetectNullSafeArrayToPointerOrCustomRefPin(container);
 				SplitBlocksAtWritesToPinnedLocals(container);
 				foreach (var block in container.Blocks)
 					DetectPinnedRegion(block);
@@ -94,48 +94,38 @@ namespace ICSharpCode.Decompiler.IL.ControlFlow
 				var block = container.Blocks[i];
 				for (int j = 0; j < block.Instructions.Count - 1; j++) {
 					var inst = block.Instructions[j];
-					ILVariable v;
-					if (inst.MatchStLoc(out v) && v.Kind == VariableKind.PinnedLocal && block.Instructions[j + 1].OpCode != OpCode.Branch) {
-						// split block after j:
-						context.Step("Split block after pinned local write", inst);
-						var newBlock = new Block();
-						for (int k = j + 1; k < block.Instructions.Count; k++) {
-							newBlock.Instructions.Add(block.Instructions[k]);
+					if (inst.MatchStLoc(out ILVariable v) && v.Kind == VariableKind.PinnedLocal) {
+						if (block.Instructions[j + 1].OpCode != OpCode.Branch) {
+							// split block after j:
+							context.Step("Split block after pinned local write", inst);
+							var newBlock = new Block();
+							for (int k = j + 1; k < block.Instructions.Count; k++) {
+								newBlock.Instructions.Add(block.Instructions[k]);
+							}
+							newBlock.AddILRange(newBlock.Instructions[0]);
+							block.Instructions.RemoveRange(j + 1, newBlock.Instructions.Count);
+							block.Instructions.Add(new Branch(newBlock));
+							container.Blocks.Insert(i + 1, newBlock);
 						}
-						newBlock.AddILRange(newBlock.Instructions[0]);
-						block.Instructions.RemoveRange(j + 1, newBlock.Instructions.Count);
-						block.Instructions.Add(new Branch(newBlock));
-						container.Blocks.Insert(i + 1, newBlock);
+						if (j > 0) {
+							// split block before j:
+							context.Step("Split block before pinned local write", inst);
+							var newBlock = new Block();
+							newBlock.Instructions.Add(block.Instructions[j]);
+							newBlock.Instructions.Add(block.Instructions[j + 1]);
+							Debug.Assert(block.Instructions.Count == j + 2);
+							block.Instructions.RemoveRange(j, 2);
+							block.Instructions.Insert(j, new Branch(newBlock));
+							container.Blocks.Insert(i + 1, newBlock);
+						}
 					}
 				}
 			}
 		}
 
 		#region null-safe array to pointer
-		void DetectNullSafeArrayToPointer(BlockContainer container)
+		void DetectNullSafeArrayToPointerOrCustomRefPin(BlockContainer container)
 		{
-			// Detect the following pattern:
-			//   ...
-			//   stloc V(ldloc S)
-			//   if (comp(ldloc S == ldnull)) br B_null_or_empty
-			//   br B_not_null
-			// }
-			// Block B_not_null {
-			//   if (conv i->i4 (ldlen(ldloc V))) br B_not_null_and_not_empty
-			//   br B_null_or_empty
-			// }
-			// Block B_not_null_and_not_empty {
-			//   stloc P(ldelema(ldloc V, ldc.i4 0, ...))
-			//   br B_target
-			// }
-			// Block B_null_or_empty {
-			//   stloc P(conv i4->u(ldc.i4 0))
-			//   br B_target
-			// }
-			// And convert the whole thing into:
-			//   ...
-			//   stloc P(array.to.pointer(V))
-			//   br B_target
 			bool modified = false;
 			for (int i = 0; i < container.Blocks.Count; i++) {
 				var block = container.Blocks[i];
@@ -149,13 +139,140 @@ namespace ICSharpCode.Decompiler.IL.ControlFlow
 						.WithILRange(block.Instructions[block.Instructions.Count - 2]);
 					((Branch)block.Instructions.Last()).TargetBlock = targetBlock;
 					modified = true;
+				} else if (IsCustomRefPinPattern(block, out ILInstruction ldlocMem, out var callGPR, out v, out var stlocPtr, out targetBlock)) {
+					context.Step("CustomRefPinPattern", block);
+					ILInstruction gpr;
+					if (context.Settings.PatternBasedFixedStatement) {
+						gpr = new GetPinnableReference(ldlocMem, callGPR.Method);
+					} else {
+						gpr = new IfInstruction(
+							condition: new Comp(ComparisonKind.Inequality, Sign.None, ldlocMem, new LdNull()),
+							trueInst: callGPR,
+							falseInst: new Conv(new LdcI4(0), PrimitiveType.Ref, checkForOverflow: false, inputSign: Sign.None)
+						);
+					}
+					block.Instructions[block.Instructions.Count - 2] = new StLoc(v, gpr)
+						.WithILRange(block.Instructions[block.Instructions.Count - 2]);
+					block.Instructions.Insert(block.Instructions.Count - 1, stlocPtr);
+					((Branch)block.Instructions.Last()).TargetBlock = targetBlock;
+					modified = true;
 				}
 			}
 			if (modified) {
 				container.Blocks.RemoveAll(b => b.IncomingEdgeCount == 0); // remove blocks made unreachable
 			}
 		}
-		
+
+		// Detect the following pattern:
+		//      if (comp.o(ldloc mem != ldnull)) br notNullBlock
+		//      br nullBlock
+		//  }
+		//
+		//  Block nullBlock (incoming: 1) {
+		//      stloc ptr(conv i4->u <zero extend>(ldc.i4 0))
+		//      br targetBlock
+		//  }
+		//
+		//  Block notNullBlock (incoming: 1) {
+		//      stloc V_1(call GetPinnableReference(ldloc mem))
+		//      stloc ptr(conv ref->u (ldloc V_1))
+		//      br targetBlock
+		//  }
+		// It will be replaced with:
+		//      stloc V_1(get.pinnable.reference(ldloc mem))
+		//      stloc ptr(conv ref->u (ldloc V_1))
+		//      br targetBlock
+		private bool IsCustomRefPinPattern(Block block, out ILInstruction ldlocMem, out CallInstruction callGPR,
+			out ILVariable v, out StLoc ptrAssign, out Block targetBlock)
+		{
+			ldlocMem = null;
+			callGPR = null;
+			v = null;
+			ptrAssign = null;
+			targetBlock = null;
+			//      if (comp.o(ldloc mem != ldnull)) br on_not_null
+			//      br on_null
+			if (!block.MatchIfAtEndOfBlock(out var ifCondition, out var trueInst, out var falseInst))
+				return false;
+			if (!ifCondition.MatchCompNotEqualsNull(out ldlocMem))
+				return false;
+			if (!SemanticHelper.IsPure(ldlocMem.Flags))
+				return false;
+			if (!trueInst.MatchBranch(out Block notNullBlock) || notNullBlock.Parent != block.Parent)
+				return false;
+			if (!falseInst.MatchBranch(out Block nullBlock) || nullBlock.Parent != block.Parent)
+				return false;
+
+			//  Block nullBlock (incoming: 1) {
+			//      stloc ptr(conv i4->u <zero extend>(ldc.i4 0))
+			//      br targetBlock
+			//  }
+			if (nullBlock.IncomingEdgeCount != 1)
+				return false;
+			if (nullBlock.Instructions.Count != 2)
+				return false;
+			if (!nullBlock.Instructions[0].MatchStLoc(out var ptr, out var nullPointerInst))
+				return false;
+			if (!nullPointerInst.MatchLdcI(0))
+				return false;
+			if (!nullBlock.Instructions[1].MatchBranch(out targetBlock))
+				return false;
+
+			//  Block notNullBlock (incoming: 1) {
+			//      stloc V_1(call GetPinnableReference(ldloc mem))
+			//      stloc ptr(conv ref->u (ldloc V_1))
+			//      br targetBlock
+			//  }
+			if (notNullBlock.IncomingEdgeCount != 1)
+				return false;
+			if (notNullBlock.Instructions.Count != 3)
+				return false;
+			// stloc V_1(call GetPinnableReference(ldloc mem))
+			if (!notNullBlock.Instructions[0].MatchStLoc(out v, out var value))
+				return false;
+			if (v.Kind != VariableKind.PinnedLocal)
+				return false;
+			callGPR = value as CallInstruction;
+			if (callGPR == null || callGPR.Arguments.Count != 1)
+				return false;
+			if (callGPR.Method.Name != "GetPinnableReference")
+				return false;
+			if (!ldlocMem.Match(callGPR.Arguments[0]).Success)
+				return false;
+			// stloc ptr(conv ref->u (ldloc V_1))
+			ptrAssign = notNullBlock.Instructions[1] as StLoc;
+			if (ptrAssign == null || ptrAssign.Variable != ptr)
+				return false;
+			if (!ptrAssign.Value.UnwrapConv(ConversionKind.StopGCTracking).MatchLdLoc(v))
+				return false;
+			// br targetBlock
+			if (!notNullBlock.Instructions[2].MatchBranch(targetBlock))
+				return false;
+			return true;
+		}
+
+		// Detect the following pattern:
+		//   ...
+		//   stloc V(ldloc S)
+		//   if (comp(ldloc S == ldnull)) br B_null_or_empty
+		//   br B_not_null
+		// }
+		// Block B_not_null {
+		//   if (conv i->i4 (ldlen(ldloc V))) br B_not_null_and_not_empty
+		//   br B_null_or_empty
+		// }
+		// Block B_not_null_and_not_empty {
+		//   stloc P(ldelema(ldloc V, ldc.i4 0, ...))
+		//   br B_target
+		// }
+		// Block B_null_or_empty {
+		//   stloc P(conv i4->u(ldc.i4 0))
+		//   br B_target
+		// }
+		// And convert the whole thing into:
+		//   ...
+		//   stloc P(array.to.pointer(V))
+		//   br B_target
 		bool IsNullSafeArrayToPointerPattern(Block block, out ILVariable v, out ILVariable p, out Block targetBlock)
 		{
 			v = null;
@@ -239,11 +356,19 @@ namespace ICSharpCode.Decompiler.IL.ControlFlow
 			//   stloc P(ldelema(ldloc V, ldc.i4 0, ...))
 			//   br B_target
 			// }
-			ILInstruction value;
 			if (block.Instructions.Count != 2)
 				return false;
-			if (!block.Instructions[0].MatchStLoc(p, out value))
+			if (!block.Instructions[0].MatchStLoc(out var p2, out ILInstruction value))
 				return false;
+			if (p != p2) {
+				// If the pointer is unused, the variable P might have been split.
+				if (p.LoadCount == 0 && p.AddressCount == 0 && p2.LoadCount == 0 && p2.AddressCount == 0) {
+					if (!ILVariableEqualityComparer.Instance.Equals(p, p2))
+						return false;
+				} else {
+					return false;
+				}
+			}
 			if (v.Kind == VariableKind.PinnedLocal) {
 				value = value.UnwrapConv(ConversionKind.StopGCTracking);
 			}
@@ -306,30 +431,24 @@ namespace ICSharpCode.Decompiler.IL.ControlFlow
 				// we didn't find a single block to be added to the pinned region
 				return false;
 			}
-			reachedEdgesPerBlock[entryBlock.ChildIndex]++;
-			workList.Enqueue(entryBlock);
+			if (entryBlock.Instructions[0].MatchStLoc(stLoc.Variable, out _)) {
+				// pinned region has empty body
+			} else {
+				reachedEdgesPerBlock[entryBlock.ChildIndex]++;
+				workList.Enqueue(entryBlock);
+			}
 			while (workList.Count > 0) {
 				Block workItem = workList.Dequeue();
-				StLoc workStLoc = workItem.Instructions.SecondToLastOrDefault() as StLoc;
-				int instructionCount;
-				if (workStLoc != null && workStLoc.Variable == stLoc.Variable && IsNullOrZero(workStLoc.Value)) {
-					// found unpin instruction: only consider branches prior to that instruction
-					instructionCount = workStLoc.ChildIndex;
-				} else {
-					instructionCount = workItem.Instructions.Count;
-				}
-				for (int i = 0; i < instructionCount; i++) {
-					foreach (var branch in workItem.Instructions[i].Descendants.OfType<Branch>()) {
-						if (branch.TargetBlock.Parent == sourceContainer) {
-							if (branch.TargetBlock == block) {
-								// pin instruction is within a loop, and can loop around without an unpin instruction
-								// This should never happen for C#-compiled code, but may happen with C++/CLI code.
-								return false;
-							}
-							if (reachedEdgesPerBlock[branch.TargetBlock.ChildIndex]++ == 0) {
-								// detected first edge to that block: add block as work item
-								workList.Enqueue(branch.TargetBlock);
-							}
+				foreach (var branch in workItem.Descendants.OfType<Branch>()) {
+					if (branch.TargetBlock.Parent == sourceContainer) {
+						if (branch.TargetBlock.Instructions[0].MatchStLoc(stLoc.Variable, out _)) {
+							// Found unpin instruction
+							continue;
+						}
+						Debug.Assert(branch.TargetBlock != block);
+						if (reachedEdgesPerBlock[branch.TargetBlock.ChildIndex]++ == 0) {
+							// detected first edge to that block: add block as work item
+							workList.Enqueue(branch.TargetBlock);
 						}
 					}
 				}
@@ -349,12 +468,14 @@ namespace ICSharpCode.Decompiler.IL.ControlFlow
 				if (reachedEdgesPerBlock[i] > 0) {
 					var innerBlock = sourceContainer.Blocks[i];
 					Branch br = innerBlock.Instructions.LastOrDefault() as Branch;
-					if (br != null && br.TargetContainer == sourceContainer && reachedEdgesPerBlock[br.TargetBlock.ChildIndex] == 0) {
+					if (br != null && br.TargetBlock.IncomingEdgeCount == 1 
+						&& br.TargetContainer == sourceContainer && reachedEdgesPerBlock[br.TargetBlock.ChildIndex] == 0)
+					{
 						// branch that leaves body.
-						// Should have an instruction that resets the pin; delete that instruction:
-						StLoc innerStLoc = innerBlock.Instructions.SecondToLastOrDefault() as StLoc;
-						if (innerStLoc != null && innerStLoc.Variable == stLoc.Variable && IsNullOrZero(innerStLoc.Value)) {
-							innerBlock.Instructions.RemoveAt(innerBlock.Instructions.Count - 2);
+						// The target block should have an instruction that resets the pin; delete that instruction:
+						StLoc unpin = br.TargetBlock.Instructions.First() as StLoc;
+						if (unpin != null && unpin.Variable == stLoc.Variable && IsNullOrZero(unpin.Value)) {
+							br.TargetBlock.Instructions.RemoveAt(0);
 						}
 					}
 					
@@ -362,6 +483,14 @@ namespace ICSharpCode.Decompiler.IL.ControlFlow
 					sourceContainer.Blocks[i] = new Block(); // replace with dummy block
 					// we'll delete the dummy block later
 				}
+			}
+			if (body.Blocks.Count == 0) {
+				// empty body, the entryBlock itself doesn't belong into the pinned region
+				Debug.Assert(reachedEdgesPerBlock[entryBlock.ChildIndex] == 0);
+				var bodyBlock = new Block();
+				bodyBlock.SetILRange(stLoc);
+				bodyBlock.Instructions.Add(new Branch(entryBlock));
+				body.Blocks.Add(bodyBlock);
 			}
 
 			var pinnedRegion = new PinnedRegion(stLoc.Variable, stLoc.Value, body).WithILRange(stLoc);
@@ -441,6 +570,8 @@ namespace ICSharpCode.Decompiler.IL.ControlFlow
 						return; // variable access that is not LdLoc
 				}
 			}
+			if (ldloc == null)
+				return;
 			if (!(ldloc.Parent is GetPinnableReference arrayToPointer))
 				return;
 			if (!(arrayToPointer.Parent is Conv conv && conv.Kind == ConversionKind.StopGCTracking))
@@ -537,20 +668,25 @@ namespace ICSharpCode.Decompiler.IL.ControlFlow
 				return;
 			if (!IsBranchOnNull(body.EntryPoint.Instructions[1], nativeVar, out Block targetBlock))
 				return;
-			if (targetBlock.Parent != body)
-				return;
 			if (!body.EntryPoint.Instructions[2].MatchBranch(out Block adjustOffsetToStringData))
 				return;
 			if (!(adjustOffsetToStringData.Parent == body && adjustOffsetToStringData.IncomingEdgeCount == 1
 					&& IsOffsetToStringDataBlock(adjustOffsetToStringData, nativeVar, targetBlock)))
 				return;
 			context.Step("Handle pinned string (with adjustOffsetToStringData)", pinnedRegion);
-			// remove old entry point
-			body.Blocks.RemoveAt(0);
-			body.Blocks.RemoveAt(adjustOffsetToStringData.ChildIndex);
-			// make targetBlock the new entry point
-			body.Blocks.RemoveAt(targetBlock.ChildIndex);
-			body.Blocks.Insert(0, targetBlock);
+			if (targetBlock.Parent == body) {
+				// remove old entry point
+				body.Blocks.RemoveAt(0);
+				body.Blocks.RemoveAt(adjustOffsetToStringData.ChildIndex);
+				// make targetBlock the new entry point
+				body.Blocks.RemoveAt(targetBlock.ChildIndex);
+				body.Blocks.Insert(0, targetBlock);
+			} else {
+				// pinned region has empty body, immediately jumps to targetBlock which is outside
+				body.Blocks[0].Instructions.Clear();
+				body.Blocks.RemoveRange(1, body.Blocks.Count - 1);
+				body.Blocks[0].Instructions.Add(new Branch(targetBlock));
+			}
 			pinnedRegion.Init = new GetPinnableReference(pinnedRegion.Init, null);
 
 			ILVariable otherVar;

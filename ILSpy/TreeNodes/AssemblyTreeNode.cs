@@ -32,6 +32,7 @@ using Microsoft.Win32;
 using ICSharpCode.Decompiler.TypeSystem;
 using TypeDefinitionHandle = System.Reflection.Metadata.TypeDefinitionHandle;
 using ICSharpCode.ILSpy.Properties;
+using ICSharpCode.ILSpy.ViewModels;
 
 namespace ICSharpCode.ILSpy.TreeNodes
 {
@@ -138,10 +139,13 @@ namespace ICSharpCode.ILSpy.TreeNodes
 				// if we crashed on loading, then we don't have any children
 				return;
 			}
-			typeSystem = LoadedAssembly.GetTypeSystemOrNull();
+			typeSystem = LoadedAssembly.GetTypeSystemOrNull(DecompilerTypeSystem.GetOptions(new DecompilationOptions().DecompilerSettings));
 			var assembly = (MetadataModule)typeSystem.MainModule;
-			var metadata = module.Metadata;
-
+			this.Children.Add(new Metadata.MetadataTreeNode(module, this));
+			Decompiler.DebugInfo.IDebugInfoProvider debugInfo = LoadedAssembly.GetDebugInfoOrNull();
+			if (debugInfo is Decompiler.PdbProvider.PortableDebugInfoProvider ppdb) {
+				this.Children.Add(new Metadata.DebugMetadataTreeNode(module, ppdb.IsEmbedded, ppdb.Provider.GetMetadataReader(), this));
+			}
 			this.Children.Add(new ReferenceFolderTreeNode(module, this));
 			if (module.Resources.Any())
 				this.Children.Add(new ResourceListTreeNode(module));
@@ -274,7 +278,7 @@ namespace ICSharpCode.ILSpy.TreeNodes
 			language.DecompileAssembly(LoadedAssembly, output, options);
 		}
 
-		public override bool Save(DecompilerTextView textView)
+		public override bool Save(TabPageModel tabPage)
 		{
 			Language language = this.Language;
 			if (string.IsNullOrEmpty(language.ProjectFileExtension))
@@ -299,7 +303,7 @@ namespace ICSharpCode.ILSpy.TreeNodes
 						}
 					}
 				}
-				textView.SaveToDisk(language, new[] { this }, options, dlg.FileName);
+				tabPage.ShowTextView(textView => textView.SaveToDisk(language, new[] { this }, options, dlg.FileName));
 			}
 			return true;
 		}

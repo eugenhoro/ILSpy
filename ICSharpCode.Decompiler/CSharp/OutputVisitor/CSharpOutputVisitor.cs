@@ -148,29 +148,6 @@ namespace ICSharpCode.Decompiler.CSharp.OutputVisitor
 			RPar();
 		}
 
-#if DOTNET35
-		void WriteCommaSeparatedList(IEnumerable<VariableInitializer> list)
-		{
-			WriteCommaSeparatedList(list.SafeCast<VariableInitializer, AstNode>());
-		}
-		
-		void WriteCommaSeparatedList(IEnumerable<AstType> list)
-		{
-			WriteCommaSeparatedList(list.SafeCast<AstType, AstNode>());
-		}
-		
-		void WriteCommaSeparatedListInParenthesis(IEnumerable<Expression> list, bool spaceWithin)
-		{
-			WriteCommaSeparatedListInParenthesis(list.SafeCast<Expression, AstNode>(), spaceWithin);
-		}
-		
-		void WriteCommaSeparatedListInParenthesis(IEnumerable<ParameterDeclaration> list, bool spaceWithin)
-		{
-			WriteCommaSeparatedListInParenthesis(list.SafeCast<ParameterDeclaration, AstNode>(), spaceWithin);
-		}
-
-#endif
-
 		protected virtual void WriteCommaSeparatedListInBrackets(IEnumerable<ParameterDeclaration> list, bool spaceWithin)
 		{
 			WriteToken(Roles.LBracket);
@@ -992,7 +969,7 @@ namespace ICSharpCode.Decompiler.CSharp.OutputVisitor
 		public virtual void VisitPrimitiveExpression(PrimitiveExpression primitiveExpression)
 		{
 			StartNode(primitiveExpression);
-			writer.WritePrimitiveValue(primitiveExpression.Value, primitiveExpression.UnsafeLiteralValue);
+			writer.WritePrimitiveValue(primitiveExpression.Value, primitiveExpression.Format);
 			isAfterSpace = false;
 			EndNode(primitiveExpression);
 		}
@@ -1019,7 +996,7 @@ namespace ICSharpCode.Decompiler.CSharp.OutputVisitor
 			interpolation.Expression.AcceptVisitor(this);
 			if (interpolation.Suffix != null) {
 				writer.WriteToken(Roles.Colon, ":");
-				writer.WritePrimitiveValue("", interpolation.Suffix);
+				writer.WriteInterpolatedText(interpolation.Suffix);
 			}
 			writer.WriteToken(Interpolation.RBrace, "}");
 
@@ -1029,7 +1006,7 @@ namespace ICSharpCode.Decompiler.CSharp.OutputVisitor
 		public virtual void VisitInterpolatedStringText(InterpolatedStringText interpolatedStringText)
 		{
 			StartNode(interpolatedStringText);
-			writer.WritePrimitiveValue("", TextWriterTokenWriter.ConvertString(interpolatedStringText.Text));
+			writer.WriteInterpolatedText(interpolatedStringText.Text);
 			EndNode(interpolatedStringText);
 		}
 		#endregion

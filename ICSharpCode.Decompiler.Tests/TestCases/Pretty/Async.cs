@@ -185,12 +185,33 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			}
 		}
 
+		public async Task AsyncWithLocalVar()
+		{
+			object a = new object();
+#if CS70
+			(object, string) tuple = (new object(), "abc");
+#endif
+			await UseObj(a);
+			await UseObj(a);
+#if CS70
+			await UseObj(tuple);
+#endif
+		}
+
+		public static async Task UseObj(object a)
+		{
+		}
+
 #if CS70
 		public static async Task<int> AsyncLocalFunctions()
 		{
 			return await Nested(1) + await Nested(2);
 
+#if CS80
+			static async Task<int> Nested(int i)
+#else
 			async Task<int> Nested(int i)
+#endif
 			{
 				await Task.Delay(i);
 				return i;

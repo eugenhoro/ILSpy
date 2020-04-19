@@ -62,7 +62,7 @@ namespace ICSharpCode.ILSpy.TextView
 	/// Manages the TextEditor showing the decompiled code.
 	/// Contains all the threading logic that makes the decompiler work in the background.
 	/// </summary>
-	public sealed partial class DecompilerTextView : UserControl, IDisposable
+	public sealed partial class DecompilerTextView : UserControl, IDisposable, IHaveState
 	{
 		readonly ReferenceElementGenerator referenceElementGenerator;
 		readonly UIElementGenerator uiElementGenerator;
@@ -71,6 +71,7 @@ namespace ICSharpCode.ILSpy.TextView
 		BracketHighlightRenderer bracketHighlightRenderer;
 		FoldingManager foldingManager;
 		ILSpyTreeNode[] decompiledNodes;
+		Uri currentAddress;
 		
 		DefinitionLookup definitionLookup;
 		TextSegmentCollection<ReferenceSegment> references;
@@ -96,6 +97,16 @@ namespace ICSharpCode.ILSpy.TextView
 				"C#", new string[] { ".cs" },
 				delegate {
 					using (Stream s = typeof(DecompilerTextView).Assembly.GetManifestResourceStream(typeof(DecompilerTextView), "CSharp-Mode.xshd")) {
+						using (XmlTextReader reader = new XmlTextReader(s)) {
+							return HighlightingLoader.Load(reader, HighlightingManager.Instance);
+						}
+					}
+				});
+
+			HighlightingManager.Instance.RegisterHighlighting(
+				"Asm", new string[] { ".s", ".asm" },
+				delegate {
+					using (Stream s = typeof(DecompilerTextView).Assembly.GetManifestResourceStream(typeof(DecompilerTextView), "Asm-Mode.xshd")) {
 						using (XmlTextReader reader = new XmlTextReader(s)) {
 							return HighlightingLoader.Load(reader, HighlightingManager.Instance);
 						}
@@ -570,7 +581,7 @@ namespace ICSharpCode.ILSpy.TextView
 				this.nextDecompilationRun = null;
 			}
 			if (nodes != null && string.IsNullOrEmpty(textOutput.Title))
-				textOutput.Title = string.Join(", ", nodes.Select(n => n.ToString()));
+				textOutput.Title = string.Join(", ", nodes.Select(n => n.Text));
 			ShowOutput(textOutput, highlighting);
 			decompiledNodes = nodes;
 		}
@@ -637,6 +648,7 @@ namespace ICSharpCode.ILSpy.TextView
 			if (this.DataContext is PaneModel model) {
 				model.Title = textOutput.Title;
 			}
+			currentAddress = textOutput.Address;
 		}
 		#endregion
 		
@@ -760,7 +772,7 @@ namespace ICSharpCode.ILSpy.TextView
 		{
 			var nodes = context.TreeNodes;
 			if (textOutput is ISmartTextOutput smartTextOutput) {
-				smartTextOutput.Title = string.Join(", ", nodes.Select(n => n.ToString()));
+				smartTextOutput.Title = string.Join(", ", nodes.Select(n => n.Text));
 			}
 			for (int i = 0; i < nodes.Length; i++) {
 				if (i > 0)
@@ -1000,7 +1012,7 @@ namespace ICSharpCode.ILSpy.TextView
 		
 		public DecompilerTextViewState GetState()
 		{
-			if (decompiledNodes == null)
+			if (decompiledNodes == null && currentAddress == null)
 				return null;
 
 			var state = new DecompilerTextViewState();
@@ -1008,10 +1020,13 @@ namespace ICSharpCode.ILSpy.TextView
 				state.SaveFoldingsState(foldingManager.AllFoldings);
 			state.VerticalOffset = textEditor.VerticalOffset;
 			state.HorizontalOffset = textEditor.HorizontalOffset;
-			state.DecompiledNodes = decompiledNodes;
+			state.DecompiledNodes = decompiledNodes == null ? null : new HashSet<ILSpyTreeNode>(decompiledNodes);
+			state.ViewedUri = currentAddress;
 			return state;
 		}
-		
+
+		ViewState IHaveState.GetState() => GetState();
+
 		public void Dispose()
 		{
 			DisplaySettingsPanel.CurrentDisplaySettings.PropertyChanged -= CurrentDisplaySettings_PropertyChanged;
@@ -1045,36 +1060,52 @@ namespace ICSharpCode.ILSpy.TextView
 			}
 		}
 		#endregion
-
-		private void self_DataContextChanged(object sender, DependencyPropertyChangedEventArgs e)
-		{
-			if (e.OldValue is DecompiledDocumentModel oldModel)
-				oldModel.TextView = null;
-			if (e.NewValue is DecompiledDocumentModel newModel)
-				newModel.TextView = this;
-		}
 	}
 
-	public class DecompilerTextViewState
+	[DebuggerDisplay("Nodes = {DecompiledNodes}, ViewedUri = {ViewedUri}")]
+	public class ViewState : IEquatable<ViewState>
+	{
+		public HashSet<ILSpyTreeNode> DecompiledNodes;
+		public Uri ViewedUri;
+
+		public virtual bool Equals(ViewState other)
+		{
+			return other != null
+				&& ViewedUri == other.ViewedUri
+				&& (DecompiledNodes == other.DecompiledNodes || DecompiledNodes?.SetEquals(other.DecompiledNodes) == true);
+		}
+	}
+	
+	public class DecompilerTextViewState : ViewState
 	{
 		private List<Tuple<int, int>> ExpandedFoldings;
 		private int FoldingsChecksum;
 		public double VerticalOffset;
 		public double HorizontalOffset;
-		public ILSpyTreeNode[] DecompiledNodes;
 
 		public void SaveFoldingsState(IEnumerable<FoldingSection> foldings)
 		{
 			ExpandedFoldings = foldings.Where(f => !f.IsFolded).Select(f => Tuple.Create(f.StartOffset, f.EndOffset)).ToList();
-			FoldingsChecksum = unchecked(foldings.Select(f => f.StartOffset * 3 - f.EndOffset).Aggregate((a, b) => a + b));
+			FoldingsChecksum = unchecked(foldings.Select(f => f.StartOffset * 3 - f.EndOffset).DefaultIfEmpty().Aggregate((a, b) => a + b));
 		}
 
 		internal void RestoreFoldings(List<NewFolding> list)
 		{
-			var checksum = unchecked(list.Select(f => f.StartOffset * 3 - f.EndOffset).Aggregate((a, b) => a + b));
+			var checksum = unchecked(list.Select(f => f.StartOffset * 3 - f.EndOffset).DefaultIfEmpty().Aggregate((a, b) => a + b));
 			if (FoldingsChecksum == checksum)
 				foreach (var folding in list)
 					folding.DefaultClosed = !ExpandedFoldings.Any(f => f.Item1 == folding.StartOffset && f.Item2 == folding.EndOffset);
+		}
+
+		public override bool Equals(ViewState other)
+		{
+			if (other is DecompilerTextViewState vs) {
+				return base.Equals(vs)
+					&& FoldingsChecksum == vs.FoldingsChecksum
+					&& VerticalOffset == vs.VerticalOffset
+					&& HorizontalOffset == vs.HorizontalOffset;
+			}
+			return false;
 		}
 	}
 }
