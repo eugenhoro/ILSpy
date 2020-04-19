@@ -309,12 +309,18 @@ namespace ICSharpCode.Decompiler.CSharp
 				}
 			}
 
-			int allowedParamCount = (method.ReturnType.IsKnownType(KnownTypeCode.Void) ? 1 : 0);
-			if (method.IsAccessor && (method.AccessorOwner.SymbolKind == SymbolKind.Indexer || argumentList.ExpectedParameters.Length == allowedParamCount)) {
-				argumentList.CheckNoNamedOrOptionalArguments();
-				return HandleAccessorCall(expectedTargetDetails, method, target, argumentList.Arguments.ToList(), argumentList.ArgumentNames); 
+			if (settings.DecompileAccessors)
+			{
+				int allowedParamCount = (method.ReturnType.IsKnownType(KnownTypeCode.Void) ? 1 : 0);
+				if (method.IsAccessor && (method.AccessorOwner.SymbolKind == SymbolKind.Indexer ||
+				                          argumentList.ExpectedParameters.Length == allowedParamCount))
+				{
+					argumentList.CheckNoNamedOrOptionalArguments();
+					return HandleAccessorCall(expectedTargetDetails, method, target, argumentList.Arguments.ToList(),
+						argumentList.ArgumentNames);
+				}
 			}
-			
+
 			if (IsDelegateEqualityComparison(method, argumentList.Arguments)) {
 				argumentList.CheckNoNamedOrOptionalArguments();
 				return HandleDelegateEqualityComparison(method, argumentList.Arguments)
@@ -322,7 +328,7 @@ namespace ICSharpCode.Decompiler.CSharp
 						argumentList.GetArgumentResolveResults().ToList(), isExpandedForm: argumentList.IsExpandedForm));
 			}
 			
-			if (method.IsOperator && method.Name == "op_Implicit" && argumentList.Length == 1) {
+			if (settings.DecompileOperators && method.IsOperator && method.Name == "op_Implicit" && argumentList.Length == 1) {
 				argumentList.CheckNoNamedOrOptionalArguments();
 				return HandleImplicitConversion(method, argumentList.Arguments[0]);
 			}

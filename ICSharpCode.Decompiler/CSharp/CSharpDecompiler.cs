@@ -424,6 +424,10 @@ namespace ICSharpCode.Decompiler.CSharp
 			var typeSystemAstBuilder = CreateAstBuilder(decompilationContext);
 			var context = new TransformContext(typeSystem, decompileRun, decompilationContext, typeSystemAstBuilder);
 			foreach (var transform in astTransforms) {
+				if (transform is ReplaceMethodCallsWithOperators operatorTransformer)
+				{
+					operatorTransformer.DecompileOperators = settings.DecompileOperators;
+				}
 				CancellationToken.ThrowIfCancellationRequested();
 				transform.Run(rootNode, context);
 			}
@@ -1099,9 +1103,18 @@ namespace ICSharpCode.Decompiler.CSharp
 					}
 				}
 				foreach (var property in typeDef.Properties) {
-					if (!property.MetadataToken.IsNil && !MemberIsHidden(module.PEFile, property.MetadataToken, settings)) {
-						var propDecl = DoDecompile(property, decompileRun, decompilationContext.WithCurrentMember(property));
-						typeDecl.Members.Add(propDecl);
+					if (!property.MetadataToken.IsNil &&
+					    !MemberIsHidden(module.PEFile, property.MetadataToken, settings))
+					{
+						if (settings.DecompileAccessors)
+						{
+							var propDecl = DoDecompile(property, decompileRun, decompilationContext.WithCurrentMember(property));
+							typeDecl.Members.Add(propDecl);
+						}
+						else
+						{
+							DecompileAccessorsAsMethods(decompileRun, decompilationContext, property, typeDecl, typeSystemAstBuilder);
+						}
 					}
 				}
 				foreach (var @event in typeDef.Events) {
@@ -1157,6 +1170,33 @@ namespace ICSharpCode.Decompiler.CSharp
 			} catch (Exception innerException) when (!(innerException is OperationCanceledException || innerException is DecompilerException)) {
 				throw new DecompilerException(module, typeDef, innerException);
 			}
+		}
+
+		private void DecompileAccessorsAsMethods(DecompileRun decompileRun, ITypeResolveContext decompilationContext,
+			IProperty property, TypeDeclaration typeDecl, TypeSystemAstBuilder typeSystemAstBuilder)
+		{
+			var getter = property.Getter;
+			var setter = property.Setter;
+			if (getter != null)
+			{
+				DecompileAndAddMethodDeclaration(decompileRun, decompilationContext, typeDecl, typeSystemAstBuilder,
+					getter);
+			}
+
+			if (setter != null)
+			{
+				DecompileAndAddMethodDeclaration(decompileRun, decompilationContext, typeDecl, typeSystemAstBuilder,
+					setter);
+			}
+		}
+
+		private void DecompileAndAddMethodDeclaration(DecompileRun decompileRun, ITypeResolveContext decompilationContext,
+			TypeDeclaration typeDecl, TypeSystemAstBuilder typeSystemAstBuilder, IMethod method)
+		{
+			var memberDecl = DoDecompile(method, decompileRun, decompilationContext.WithCurrentMember(method));
+			typeDecl.Members.Add(memberDecl);
+			typeDecl.Members.AddRange(AddInterfaceImplHelpers(memberDecl, method,
+				typeSystemAstBuilder));
 		}
 
 		enum EnumValueDisplayMode
@@ -1240,9 +1280,23 @@ namespace ICSharpCode.Decompiler.CSharp
 		{
 			Debug.Assert(decompilationContext.CurrentMember == method);
 			var typeSystemAstBuilder = CreateAstBuilder(decompilationContext);
+			if (!settings.DecompileAccessors)
+			{
+				typeSystemAstBuilder.ConvertAccessorAsMethod = true;
+			}
+
+			if (!settings.DecompileOperators)
+			{
+				typeSystemAstBuilder.ConvertOperatorsAsMethods = true;
+			}
+			
 			var methodDecl = typeSystemAstBuilder.ConvertEntity(method);
 			int lastDot = method.Name.LastIndexOf('.');
-			if (method.IsExplicitInterfaceImplementation && lastDot >= 0) {
+			if (!settings.DecompileAccessors && method.SymbolKind == SymbolKind.Accessor)
+			{
+				methodDecl.Name = method.Name;
+			}
+			else if (method.IsExplicitInterfaceImplementation && lastDot >= 0) {
 				methodDecl.Name = method.Name.Substring(lastDot + 1);
 			}
 			FixParameterNames(methodDecl);

@@ -1293,9 +1293,43 @@ namespace ICSharpCode.Decompiler
 			}
 		}
 
-		CSharpFormattingOptions csharpFormattingOptions;
+        CSharpFormattingOptions csharpFormattingOptions;
+        private bool decompileAccessors = true;
+        
+        public bool DecompileAccessors
+        {
+            get { return decompileAccessors; }
+            set
+            {
+                if (decompileAccessors != value)
+                {
+                    decompileAccessors = value;
+                    OnPropertyChanged();
+                }
 
-		[Browsable(false)]
+                if (!value)
+                {
+	                MakeAssignmentExpressions = false;
+                }
+            }
+        }
+        
+        private bool decompileOperators = true;
+        
+        public bool DecompileOperators
+        {
+	        get { return decompileOperators; }
+	        set
+	        {
+		        if (decompileOperators != value)
+		        {
+			        decompileOperators = value;
+			        OnPropertyChanged();
+		        }
+	        }
+        }
+        
+        [Browsable(false)]
 		public CSharpFormattingOptions CSharpFormattingOptions {
 			get {
 				if (csharpFormattingOptions == null) {

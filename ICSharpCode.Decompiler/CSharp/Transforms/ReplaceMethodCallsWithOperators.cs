@@ -34,6 +34,14 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 	/// </summary>
 	public class ReplaceMethodCallsWithOperators : DepthFirstAstVisitor, IAstTransform
 	{
+		private bool decompileOperators = true;
+        
+		public bool DecompileOperators
+		{
+			get { return decompileOperators; }
+			set { decompileOperators = value; }
+		}
+
 		static readonly MemberReferenceExpression typeHandleOnTypeOfPattern = new MemberReferenceExpression {
 			Target = new Choice {
 				new TypeOfExpression(new AnyNode()),
@@ -127,53 +135,71 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 					break;
 			}
 
-			BinaryOperatorType? bop = GetBinaryOperatorTypeFromMetadataName(method.Name);
-			if (bop != null && arguments.Length == 2) {
-				invocationExpression.Arguments.Clear(); // detach arguments from invocationExpression
-				invocationExpression.ReplaceWith(
-					new BinaryOperatorExpression(
-						arguments[0].UnwrapInDirectionExpression(),
-						bop.Value,
-						arguments[1].UnwrapInDirectionExpression()
-					).CopyAnnotationsFrom(invocationExpression)
-				);
-				return;
-			}
-			UnaryOperatorType? uop = GetUnaryOperatorTypeFromMetadataName(method.Name);
-			if (uop != null && arguments.Length == 1) {
-				if (uop == UnaryOperatorType.Increment || uop == UnaryOperatorType.Decrement) {
-					// `op_Increment(a)` is not equivalent to `++a`,
-					// because it doesn't assign the incremented value to a.
-					if (method.DeclaringType.IsKnownType(KnownTypeCode.Decimal)) {
-						// Legacy csc optimizes "d + 1m" to "op_Increment(d)",
-						// so reverse that optimization here:
-						invocationExpression.ReplaceWith(
-							new BinaryOperatorExpression(
-								arguments[0].UnwrapInDirectionExpression().Detach(),
-								(uop == UnaryOperatorType.Increment ? BinaryOperatorType.Add : BinaryOperatorType.Subtract),
-								new PrimitiveExpression(1m)
-							).CopyAnnotationsFrom(invocationExpression)
-						);
-					}
+			if (DecompileOperators)
+			{
+				BinaryOperatorType? bop = GetBinaryOperatorTypeFromMetadataName(method.Name);
+				if (bop != null && arguments.Length == 2)
+				{
+					invocationExpression.Arguments.Clear(); // detach arguments from invocationExpression
+					invocationExpression.ReplaceWith(
+						new BinaryOperatorExpression(
+							arguments[0].UnwrapInDirectionExpression(),
+							bop.Value,
+							arguments[1].UnwrapInDirectionExpression()
+						).CopyAnnotationsFrom(invocationExpression)
+					);
 					return;
 				}
-				arguments[0].Remove(); // detach argument
-				invocationExpression.ReplaceWith(
-					new UnaryOperatorExpression(uop.Value, arguments[0].UnwrapInDirectionExpression()).CopyAnnotationsFrom(invocationExpression)
-				);
-				return;
-			}
-			if (method.Name == "op_Explicit" && arguments.Length == 1) {
-				arguments[0].Remove(); // detach argument
-				invocationExpression.ReplaceWith(
-					new CastExpression(context.TypeSystemAstBuilder.ConvertType(method.ReturnType), arguments[0].UnwrapInDirectionExpression())
-						.CopyAnnotationsFrom(invocationExpression)
-				);
-				return;
-			}
-			if (method.Name == "op_True" && arguments.Length == 1 && invocationExpression.Role == Roles.Condition) {
-				invocationExpression.ReplaceWith(arguments[0].UnwrapInDirectionExpression());
-				return;
+
+				UnaryOperatorType? uop = GetUnaryOperatorTypeFromMetadataName(method.Name);
+				if (uop != null && arguments.Length == 1)
+				{
+					if (uop == UnaryOperatorType.Increment || uop == UnaryOperatorType.Decrement)
+					{
+						// `op_Increment(a)` is not equivalent to `++a`,
+						// because it doesn't assign the incremented value to a.
+						if (method.DeclaringType.IsKnownType(KnownTypeCode.Decimal))
+						{
+							// Legacy csc optimizes "d + 1m" to "op_Increment(d)",
+							// so reverse that optimization here:
+							invocationExpression.ReplaceWith(
+								new BinaryOperatorExpression(
+									arguments[0].UnwrapInDirectionExpression().Detach(),
+									(uop == UnaryOperatorType.Increment
+										? BinaryOperatorType.Add
+										: BinaryOperatorType.Subtract),
+									new PrimitiveExpression(1m)
+								).CopyAnnotationsFrom(invocationExpression)
+							);
+						}
+
+						return;
+					}
+
+					arguments[0].Remove(); // detach argument
+					invocationExpression.ReplaceWith(
+						new UnaryOperatorExpression(uop.Value, arguments[0].UnwrapInDirectionExpression())
+							.CopyAnnotationsFrom(invocationExpression)
+					);
+					return;
+				}
+
+				if (method.Name == "op_Explicit" && arguments.Length == 1)
+				{
+					arguments[0].Remove(); // detach argument
+					invocationExpression.ReplaceWith(
+						new CastExpression(context.TypeSystemAstBuilder.ConvertType(method.ReturnType),
+								arguments[0].UnwrapInDirectionExpression())
+							.CopyAnnotationsFrom(invocationExpression)
+					);
+					return;
+				}
+
+				if (method.Name == "op_True" && arguments.Length == 1 && invocationExpression.Role == Roles.Condition)
+				{
+					invocationExpression.ReplaceWith(arguments[0].UnwrapInDirectionExpression());
+					return;
+				}
 			}
 
 			return;

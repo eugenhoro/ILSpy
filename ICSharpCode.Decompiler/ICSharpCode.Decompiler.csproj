@@ -2,7 +2,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>netstandard2.0</TargetFramework>
 
     <Description>IL decompiler engine</Description>
     <Company>ic#code</Company>
@@ -19,6 +18,7 @@
     <SignAssembly>True</SignAssembly>
     <AssemblyOriginatorKeyFile>ICSharpCode.Decompiler.snk</AssemblyOriginatorKeyFile>
     <NoWarn>1701;1702;1591;1573</NoWarn>
+    <TargetFramework>netstandard2.0</TargetFramework>
   </PropertyGroup>
   
   <!-- HACK: Disable package generation on Unix due to tooling issues. -->
@@ -621,12 +621,5 @@
   <ItemGroup>
     <Service Include="{508349b6-6b84-4df5-91f0-309beebad82d}" />
   </ItemGroup>
-
-  <Target Name="ILSpyUpdateAssemblyInfo" BeforeTargets="BeforeBuild">
-    <PropertyGroup>
-      <UpdateAssemblyInfo>powershell -NoProfile -ExecutionPolicy Bypass -File BuildTools/update-assemblyinfo.ps1 $(Configuration)</UpdateAssemblyInfo>
-    </PropertyGroup>
-    <Exec WorkingDirectory=".." Command="$(UpdateAssemblyInfo)" Timeout="60000" />
-  </Target>
   
 </Project>

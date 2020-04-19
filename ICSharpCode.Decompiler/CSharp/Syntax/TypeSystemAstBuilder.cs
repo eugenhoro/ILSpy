@@ -198,6 +198,12 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 		/// The default value is <c>false</c>.
 		/// </summary>
 		public bool PrintIntegralValuesAsHex { get; set; }
+		
+		/// <summary>
+		/// Controls whether accessors are converted as methods.
+		/// The default value is <c>false</c>.
+		/// </summary>
+		public bool ConvertAccessorAsMethod { get; set; }
 		#endregion
 
 		#region Convert Type
@@ -1330,19 +1336,29 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 				case SymbolKind.Method:
 					return ConvertMethod((IMethod)entity);
 				case SymbolKind.Operator:
+					if (ConvertOperatorsAsMethods)
+					{
+						return ConvertMethod((IMethod) entity);
+					}
 					return ConvertOperator((IMethod)entity);
 				case SymbolKind.Constructor:
 					return ConvertConstructor((IMethod)entity);
 				case SymbolKind.Destructor:
 					return ConvertDestructor((IMethod)entity);
 				case SymbolKind.Accessor:
+					if (ConvertAccessorAsMethod)
+					{
+						return ConvertMethod((IMethod)entity);
+					}
 					IMethod accessor = (IMethod)entity;
 					return ConvertAccessor(accessor, accessor.AccessorOwner != null ? accessor.AccessorOwner.Accessibility : Accessibility.None, false);
 				default:
 					throw new ArgumentException("Invalid value for SymbolKind: " + entity.SymbolKind);
 			}
 		}
-		
+
+		public bool ConvertOperatorsAsMethods { get; set; }
+
 		EntityDeclaration ConvertTypeDefinition(ITypeDefinition typeDefinition)
 		{
 			Modifiers modifiers = Modifiers.None;
